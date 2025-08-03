@@ -1,0 +1,107 @@
+{
+  "name": "aws-config-custom-widgets",
+  "version": "1.0.0",
+  "description": "AWS Config Rules Dashboard - CloudWatch Custom Widgets",
+  "main": "index.js",
+  "scripts": {
+    "deploy": "chmod +x scripts/deploy.sh && ./scripts/deploy.sh deploy",
+    "deploy:dev": "chmod +x scripts/deploy.sh && ./scripts/deploy.sh deploy --environment dev",
+    "deploy:staging": "chmod +x scripts/deploy.sh && ./scripts/deploy.sh deploy --environment staging",
+    "deploy:prod": "chmod +x scripts/deploy.sh && ./scripts/deploy.sh deploy --environment prod",
+    "cleanup": "chmod +x scripts/deploy.sh && ./scripts/deploy.sh cleanup",
+    "validate": "chmod +x scripts/deploy.sh && ./scripts/deploy.sh validate",
+    "status": "chmod +x scripts/deploy.sh && ./scripts/deploy.sh status",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "build": "echo 'No build step required for Lambda inline code'",
+    "package": "echo 'No packaging required for CloudFormation inline code'"
+  },
+  "keywords": [
+    "aws",
+    "config",
+    "cloudwatch",
+    "custom-widgets",
+    "dashboard",
+    "compliance",
+    "remediation",
+    "lambda",
+    "cloudformation"
+  ],
+  "author": "AWS Config Custom Widgets Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/aws-config-custom-widgets.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/aws-config-custom-widgets/issues"
+  },
+  "homepage": "https://github.com/your-org/aws-config-custom-widgets#readme",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^18.0.0",
+    "eslint": "^8.40.0",
+    "eslint-config-prettier": "^8.8.0",
+    "eslint-plugin-jest": "^27.2.0",
+    "eslint-plugin-node": "^11.1.0",
+    "jest": "^29.5.0",
+    "prettier": "^2.8.8"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1400.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "collectCoverageFrom": [
+      "src/**/*.js",
+      "!src/templates/**",
+      "!src/html/**"
+    ],
+    "coverageDirectory": "coverage",
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "testMatch": [
+      "**/tests/**/*.js",
+      "**/__tests__/**/*.js"
+    ]
+  },
+  "eslintConfig": {
+    "env": {
+      "node": true,
+      "es2022": true,
+      "jest": true
+    },
+    "extends": [
+      "eslint:recommended",
+      "prettier"
+    ],
+    "parserOptions": {
+      "ecmaVersion": 2022,
+      "sourceType": "module"
+    },
+    "rules": {
+      "no-console": "off",
+      "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+      "prefer-const": "error",
+      "no-var": "error"
+    }
+  },
+  "prettier": {
+    "semi": true,
+    "trailingComma": "es5",
+    "singleQuote": true,
+    "printWidth": 100,
+    "tabWidth": 2
+  }
+} 

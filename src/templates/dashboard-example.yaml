@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Example CloudWatch Dashboard with AWS Config Custom Widgets'
+
+Parameters:
+  ConfigRulesWidgetFunctionArn:
+    Type: String
+    Description: 'ARN of the Config Rules Widget Lambda function'
+  
+  ConfigComplianceWidgetFunctionArn:
+    Type: String
+    Description: 'ARN of the Config Compliance Widget Lambda function'
+  
+  ConfigRemediationWidgetFunctionArn:
+    Type: String
+    Description: 'ARN of the Config Remediation Widget Lambda function'
+  
+  DashboardName:
+    Type: String
+    Default: 'AWS-Config-Compliance-Dashboard'
+    Description: 'Name of the CloudWatch dashboard'
+
+Resources:
+  # CloudWatch Dashboard
+  ConfigComplianceDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Config", "ConfigRuleEvaluations", "Service", "Config" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Config Rule Evaluations",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Config", "CompliantResources", "Service", "Config" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Compliant Resources",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Config", "NonCompliantResources", "Service", "Config" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Non-Compliant Resources",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Config", "InsufficientDataResources", "Service", "Config" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Insufficient Data Resources",
+                "period": 300
+              }
+            },
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 8,
+              "properties": {
+                "endpoint": "${ConfigRulesWidgetFunctionArn}",
+                "params": {
+                  "region": "${AWS::Region}",
+                  "showRemediation": true
+                },
+                "updateOnRefresh": true,
+                "updateOnResize": true,
+                "updateOnTimeRangeChange": true
+              }
+            },
+            {
+              "type": "custom",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 8,
+              "properties": {
+                "endpoint": "${ConfigComplianceWidgetFunctionArn}",
+                "params": {
+                  "region": "${AWS::Region}"
+                },
+                "updateOnRefresh": true,
+                "updateOnResize": true,
+                "updateOnTimeRangeChange": true
+              }
+            },
+            {
+              "type": "custom",
+              "x": 0,
+              "y": 20,
+              "width": 24,
+              "height": 8,
+              "properties": {
+                "endpoint": "${ConfigRemediationWidgetFunctionArn}",
+                "params": {
+                  "region": "${AWS::Region}"
+                },
+                "updateOnRefresh": true,
+                "updateOnResize": true,
+                "updateOnTimeRangeChange": true
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardName:
+    Description: 'Name of the created CloudWatch dashboard'
+    Value: !Ref ConfigComplianceDashboard
+    Export:
+      Name: !Sub '${AWS::StackName}-DashboardName'
+
+  DashboardUrl:
+    Description: 'URL of the CloudWatch dashboard'
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ConfigComplianceDashboard}'
+    Export:
+      Name: !Sub '${AWS::StackName}-DashboardUrl'
+
+  DeploymentInstructions:
+    Description: 'Instructions for deploying the dashboard'
+    Value: |
+      To deploy this dashboard:
+      
+      1. First deploy the AWS Config Custom Widgets stack:
+         aws cloudformation deploy \
+           --template-file src/templates/config-widgets.yaml \
+           --stack-name aws-config-widgets \
+           --capabilities CAPABILITY_IAM
+      
+      2. Get the Lambda function ARNs from the outputs:
+         aws cloudformation describe-stacks \
+           --stack-name aws-config-widgets \
+           --query 'Stacks[0].Outputs'
+      
+      3. Deploy this dashboard with the ARNs:
+         aws cloudformation deploy \
+           --template-file src/templates/dashboard-example.yaml \
+           --stack-name aws-config-dashboard \
+           --parameter-overrides \
+             ConfigRulesWidgetFunctionArn=<ARN_FROM_STEP_2> \
+             ConfigComplianceWidgetFunctionArn=<ARN_FROM_STEP_2> \
+             ConfigRemediationWidgetFunctionArn=<ARN_FROM_STEP_2>
+      
+      4. Access the dashboard using the URL from the outputs. 

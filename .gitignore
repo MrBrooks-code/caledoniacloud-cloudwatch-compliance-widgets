@@ -1,0 +1,15 @@
+# PROJECT PLANNING DOCS
+DEPLOYMENT.md
+EXPANSION_IDEAS.md
+
+# PACKAGE FILES
+package-*.json
+
+# DEVELOPMENT TESTS
+test-account-level-rules.js
+test-config-api-js
+test-iam-password-policy-logic.js
+test-lambda-locally.js
+
+node_modules/
+scripts/

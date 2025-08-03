@@ -1,0 +1,867 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Config Rules Dashboard - CloudWatch Custom Widgets'
+
+Parameters:
+  WidgetName:
+    Type: String
+    Default: 'aws-config-widgets'
+    Description: 'Name prefix for the widget resources'
+  
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+  
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    MinValue: 1
+    MaxValue: 365
+    Description: 'Number of days to retain CloudWatch logs'
+
+Resources:
+  # IAM Role for Lambda functions
+  ConfigWidgetsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${WidgetName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ConfigServiceAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - config:DescribeConfigRules
+                  - config:GetComplianceSummaryByConfigRule
+                  - config:GetComplianceDetailsByConfigRule
+                  - config:DescribeConfigRuleEvaluationStatus
+                  - config:DescribeConfigRuleComplianceByConfigRule
+                  - config:DescribeComplianceByConfigRule
+                  - config:DescribeComplianceByResource
+                  - config:DescribeConfigRuleStatus
+                Resource: '*'
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${WidgetName}-*'
+
+  # CloudWatch Log Groups
+  ConfigRulesWidgetLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${WidgetName}-config-rules-widget'
+      RetentionInDays: !Ref LogRetentionDays
+
+  ConfigComplianceWidgetLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${WidgetName}-config-compliance-widget'
+      RetentionInDays: !Ref LogRetentionDays
+
+  ConfigRemediationWidgetLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${WidgetName}-config-remediation-widget'
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Lambda Functions
+  ConfigRulesWidgetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${WidgetName}-config-rules-widget'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt ConfigWidgetsRole.Arn
+      Code:
+        ZipFile: |
+          const aws = require('aws-sdk');
+          
+          exports.handler = async (event) => {
+              try {
+                  const widgetContext = event.widgetContext || {};
+                  const params = event.params || {};
+                  
+                  const config = new aws.ConfigService({ 
+                      region: params.region || widgetContext.region || process.env.AWS_REGION 
+                  });
+                  
+                  const [rulesResponse, complianceResponse] = await Promise.all([
+                      config.describeConfigRules().promise(),
+                      config.getComplianceSummaryByConfigRule().promise()
+                  ]);
+                  
+                  const rules = rulesResponse.ConfigRules || [];
+                  const compliance = complianceResponse.ComplianceSummaryByConfigRule || [];
+                  
+                  const complianceMap = {};
+                  compliance.forEach(item => {
+                      complianceMap[item.ConfigRuleName] = {
+                          CompliantResourceCount: item.ComplianceSummary.CompliantResourceCount || 0,
+                          NonCompliantResourceCount: item.ComplianceSummary.NonCompliantResourceCount || 0,
+                          TotalResourceCount: item.ComplianceSummary.TotalResourceCount || 0
+                      };
+                  });
+                  
+                  const processedRules = rules.map(rule => ({
+                      ...rule,
+                      compliance: complianceMap[rule.ConfigRuleName] || {
+                          CompliantResourceCount: 0,
+                          NonCompliantResourceCount: 0,
+                          TotalResourceCount: 0
+                      }
+                  }));
+                  
+                  const summary = {
+                      total: processedRules.length,
+                      compliant: processedRules.filter(rule => 
+                          rule.compliance.NonCompliantResourceCount === 0 && rule.compliance.TotalResourceCount > 0
+                      ).length,
+                      nonCompliant: processedRules.filter(rule => 
+                          rule.compliance.NonCompliantResourceCount > 0
+                      ).length,
+                      insufficientData: processedRules.filter(rule => 
+                          rule.compliance.TotalResourceCount === 0
+                      ).length
+                  };
+                  
+                  const theme = widgetContext.theme || 'light';
+                  const width = widgetContext.width || 400;
+                  const height = widgetContext.height || 300;
+                  
+                  return `
+                      <style>
+                          .config-widget {
+                              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                              font-size: 12px;
+                              line-height: 1.4;
+                              color: ${theme === 'dark' ? '#e1e4e8' : '#24292e'};
+                              background: ${theme === 'dark' ? '#0d1117' : '#ffffff'};
+                              border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                              border-radius: 6px;
+                              padding: 12px;
+                              overflow: hidden;
+                          }
+                          .widget-header {
+                              display: flex;
+                              justify-content: space-between;
+                              align-items: center;
+                              margin-bottom: 12px;
+                              padding-bottom: 8px;
+                              border-bottom: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                          }
+                          .widget-title {
+                              font-size: 14px;
+                              font-weight: 600;
+                              margin: 0;
+                          }
+                          .summary-stats {
+                              display: flex;
+                              gap: 12px;
+                              margin-bottom: 12px;
+                          }
+                          .stat-item {
+                              text-align: center;
+                              padding: 8px;
+                              border-radius: 4px;
+                              min-width: 60px;
+                          }
+                          .stat-compliant {
+                              background: ${theme === 'dark' ? '#0c2d6b' : '#dafbe1'};
+                              color: ${theme === 'dark' ? '#58a6ff' : '#1a7f37'};
+                          }
+                          .stat-noncompliant {
+                              background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'};
+                              color: ${theme === 'dark' ? '#ff8182' : '#cf222e'};
+                          }
+                          .stat-insufficient {
+                              background: ${theme === 'dark' ? '#3c2300' : '#fff8c5'};
+                              color: ${theme === 'dark' ? '#d29922' : '#9a6700'};
+                          }
+                          .stat-number {
+                              font-size: 16px;
+                              font-weight: 600;
+                              display: block;
+                          }
+                          .stat-label {
+                              font-size: 10px;
+                              text-transform: uppercase;
+                              letter-spacing: 0.5px;
+                          }
+                          .rules-list {
+                              max-height: ${height - 120}px;
+                              overflow-y: auto;
+                          }
+                          .rule-item {
+                              padding: 8px;
+                              border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                              border-radius: 4px;
+                              margin-bottom: 6px;
+                              background: ${theme === 'dark' ? '#161b22' : '#f6f8fa'};
+                          }
+                          .rule-header {
+                              display: flex;
+                              justify-content: space-between;
+                              align-items: center;
+                              margin-bottom: 4px;
+                          }
+                          .rule-name {
+                              font-weight: 600;
+                              font-size: 11px;
+                              color: ${theme === 'dark' ? '#58a6ff' : '#0969da'};
+                          }
+                          .rule-status {
+                              font-size: 10px;
+                              padding: 2px 6px;
+                              border-radius: 3px;
+                              font-weight: 500;
+                          }
+                          .status-compliant {
+                              background: ${theme === 'dark' ? '#0c2d6b' : '#dafbe1'};
+                              color: ${theme === 'dark' ? '#58a6ff' : '#1a7f37'};
+                          }
+                          .status-noncompliant {
+                              background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'};
+                              color: ${theme === 'dark' ? '#ff8182' : '#cf222e'};
+                          }
+                          .status-insufficient {
+                              background: ${theme === 'dark' ? '#3c2300' : '#fff8c5'};
+                              color: ${theme === 'dark' ? '#d29922' : '#9a6700'};
+                          }
+                          .rule-details {
+                              font-size: 10px;
+                              color: ${theme === 'dark' ? '#8b949e' : '#656d76'};
+                          }
+                      </style>
+                      
+                      <div class="config-widget" style="width: ${width}px; height: ${height}px;">
+                          <div class="widget-header">
+                              <h3 class="widget-title">AWS Config Rules Status</h3>
+                              <span style="font-size: 10px; color: ${theme === 'dark' ? '#8b949e' : '#656d76'};">
+                                  ${summary.total} rules
+                              </span>
+                          </div>
+                          
+                          <div class="summary-stats">
+                              <div class="stat-item stat-compliant">
+                                  <span class="stat-number">${summary.compliant}</span>
+                                  <span class="stat-label">Compliant</span>
+                              </div>
+                              <div class="stat-item stat-noncompliant">
+                                  <span class="stat-number">${summary.nonCompliant}</span>
+                                  <span class="stat-label">Non-Compliant</span>
+                              </div>
+                              <div class="stat-item stat-insufficient">
+                                  <span class="stat-number">${summary.insufficientData}</span>
+                                  <span class="stat-label">Insufficient Data</span>
+                              </div>
+                          </div>
+                          
+                          <div class="rules-list">
+                              ${processedRules.map(rule => {
+                                  const compliance = rule.compliance;
+                                  const isCompliant = compliance.NonCompliantResourceCount === 0 && compliance.TotalResourceCount > 0;
+                                  const isNonCompliant = compliance.NonCompliantResourceCount > 0;
+                                  
+                                  let statusClass = 'status-insufficient';
+                                  let statusText = 'Insufficient Data';
+                                  
+                                  if (isCompliant) {
+                                      statusClass = 'status-compliant';
+                                      statusText = 'Compliant';
+                                  } else if (isNonCompliant) {
+                                      statusClass = 'status-noncompliant';
+                                      statusText = 'Non-Compliant';
+                                  }
+                                  
+                                  const compliancePercentage = compliance.TotalResourceCount > 0 ? 
+                                      Math.round((compliance.CompliantResourceCount / compliance.TotalResourceCount) * 100) : 0;
+                                  
+                                  return `
+                                      <div class="rule-item">
+                                          <div class="rule-header">
+                                              <span class="rule-name">${rule.ConfigRuleName}</span>
+                                              <span class="rule-status ${statusClass}">${statusText}</span>
+                                          </div>
+                                          <div class="rule-details">
+                                              ${compliance.TotalResourceCount > 0 ? 
+                                                  `${compliance.CompliantResourceCount}/${compliance.TotalResourceCount} resources compliant (${compliancePercentage}%)` :
+                                                  'No resources evaluated'
+                                              }
+                                              ${rule.Description ? `<br>${rule.Description.substring(0, 100)}${rule.Description.length > 100 ? '...' : ''}` : ''}
+                                          </div>
+                                      </div>
+                                  `;
+                              }).join('')}
+                          </div>
+                      </div>
+                  `;
+                  
+              } catch (error) {
+                  console.error('Error in configRulesWidget:', error);
+                  const theme = event.widgetContext?.theme || 'light';
+                  return `
+                      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; border-radius: 6px; background: ${theme === 'dark' ? '#0d1117' : '#ffffff'}; border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};">
+                          <div style="color: ${theme === 'dark' ? '#ff8182' : '#cf222e'}; background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'}; padding: 12px; border-radius: 4px; border: 1px solid ${theme === 'dark' ? '#ff8182' : '#cf222e'}; margin-bottom: 8px;">
+                              <div style="font-weight: 600; margin-bottom: 4px;">AWS Config Widget Error</div>
+                              <div style="font-size: 12px; line-height: 1.4;">${error.message || 'An unknown error occurred while fetching Config rules data.'}</div>
+                          </div>
+                          <div style="font-size: 11px; color: ${theme === 'dark' ? '#8b949e' : '#656d76'};">
+                              Check CloudWatch logs for more details.
+                          </div>
+                      </div>
+                  `;
+              }
+          };
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+      Timeout: 30
+      MemorySize: 256
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'CloudWatch Custom Widget'
+
+  ConfigComplianceWidgetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${WidgetName}-config-compliance-widget'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt ConfigWidgetsRole.Arn
+      Code:
+        ZipFile: |
+          const aws = require('aws-sdk');
+          
+          exports.handler = async (event) => {
+              try {
+                  const widgetContext = event.widgetContext || {};
+                  const params = event.params || {};
+                  
+                  const config = new aws.ConfigService({ 
+                      region: params.region || widgetContext.region || process.env.AWS_REGION 
+                  });
+                  
+                  const [rulesResponse, complianceResponse] = await Promise.all([
+                      config.describeConfigRules().promise(),
+                      config.getComplianceSummaryByConfigRule().promise()
+                  ]);
+                  
+                  const rules = rulesResponse.ConfigRules || [];
+                  const compliance = complianceResponse.ComplianceSummaryByConfigRule || [];
+                  
+                  const complianceMap = {};
+                  compliance.forEach(item => {
+                      complianceMap[item.ConfigRuleName] = {
+                          CompliantResourceCount: item.ComplianceSummary.CompliantResourceCount || 0,
+                          NonCompliantResourceCount: item.ComplianceSummary.NonCompliantResourceCount || 0,
+                          TotalResourceCount: item.ComplianceSummary.TotalResourceCount || 0
+                      };
+                  });
+                  
+                  const totalRules = rules.length;
+                  const compliantRules = rules.filter(rule => {
+                      const comp = complianceMap[rule.ConfigRuleName];
+                      return comp && comp.NonCompliantResourceCount === 0 && comp.TotalResourceCount > 0;
+                  }).length;
+                  
+                  const nonCompliantRules = rules.filter(rule => {
+                      const comp = complianceMap[rule.ConfigRuleName];
+                      return comp && comp.NonCompliantResourceCount > 0;
+                  }).length;
+                  
+                  const insufficientDataRules = totalRules - compliantRules - nonCompliantRules;
+                  
+                  const theme = widgetContext.theme || 'light';
+                  const width = widgetContext.width || 400;
+                  const height = widgetContext.height || 300;
+                  
+                  return `
+                      <style>
+                          .compliance-widget {
+                              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                              font-size: 12px;
+                              line-height: 1.4;
+                              color: ${theme === 'dark' ? '#e1e4e8' : '#24292e'};
+                              background: ${theme === 'dark' ? '#0d1117' : '#ffffff'};
+                              border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                              border-radius: 6px;
+                              padding: 12px;
+                              overflow: hidden;
+                          }
+                          .widget-header {
+                              display: flex;
+                              justify-content: space-between;
+                              align-items: center;
+                              margin-bottom: 12px;
+                              padding-bottom: 8px;
+                              border-bottom: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                          }
+                          .widget-title {
+                              font-size: 14px;
+                              font-weight: 600;
+                              margin: 0;
+                          }
+                          .overview-container {
+                              display: flex;
+                              gap: 16px;
+                              margin-bottom: 16px;
+                          }
+                          .chart-container {
+                              flex: 0 0 120px;
+                          }
+                          .summary-stats {
+                              flex: 1;
+                          }
+                          .stat-item {
+                              display: flex;
+                              justify-content: space-between;
+                              margin-bottom: 6px;
+                              padding: 4px 8px;
+                              border-radius: 3px;
+                          }
+                          .stat-compliant {
+                              background: ${theme === 'dark' ? '#0c2d6b' : '#dafbe1'};
+                              color: ${theme === 'dark' ? '#58a6ff' : '#1a7f37'};
+                          }
+                          .stat-noncompliant {
+                              background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'};
+                              color: ${theme === 'dark' ? '#ff8182' : '#cf222e'};
+                          }
+                          .stat-insufficient {
+                              background: ${theme === 'dark' ? '#3c2300' : '#fff8c5'};
+                              color: ${theme === 'dark' ? '#d29922' : '#9a6700'};
+                          }
+                          .rules-list {
+                              max-height: ${height - 180}px;
+                              overflow-y: auto;
+                          }
+                          .rule-item {
+                              padding: 8px;
+                              border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                              border-radius: 4px;
+                              margin-bottom: 6px;
+                              background: ${theme === 'dark' ? '#161b22' : '#f6f8fa'};
+                              cursor: pointer;
+                          }
+                          .rule-header {
+                              display: flex;
+                              justify-content: space-between;
+                              align-items: center;
+                              margin-bottom: 4px;
+                          }
+                          .rule-name {
+                              font-weight: 600;
+                              font-size: 11px;
+                              color: ${theme === 'dark' ? '#58a6ff' : '#0969da'};
+                          }
+                          .rule-compliance {
+                              font-size: 10px;
+                              padding: 2px 6px;
+                              border-radius: 3px;
+                              font-weight: 500;
+                          }
+                          .compliance-compliant {
+                              background: ${theme === 'dark' ? '#0c2d6b' : '#dafbe1'};
+                              color: ${theme === 'dark' ? '#58a6ff' : '#1a7f37'};
+                          }
+                          .compliance-noncompliant {
+                              background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'};
+                              color: ${theme === 'dark' ? '#ff8182' : '#cf222e'};
+                          }
+                          .compliance-insufficient {
+                              background: ${theme === 'dark' ? '#3c2300' : '#fff8c5'};
+                              color: ${theme === 'dark' ? '#d29922' : '#9a6700'};
+                          }
+                          .rule-details {
+                              font-size: 10px;
+                              color: ${theme === 'dark' ? '#8b949e' : '#656d76'};
+                          }
+                      </style>
+                      
+                      <div class="compliance-widget" style="width: ${width}px; height: ${height}px;">
+                          <div class="widget-header">
+                              <h3 class="widget-title">Compliance Summary</h3>
+                              <span style="font-size: 10px; color: ${theme === 'dark' ? '#8b949e' : '#656d76'};">
+                                  ${totalRules} rules
+                              </span>
+                          </div>
+                          
+                          <div class="overview-container">
+                              <div class="chart-container">
+                                  <svg width="120" height="120" viewBox="0 0 120 120">
+                                      <circle cx="60" cy="60" r="50" fill="none" stroke="${theme === 'dark' ? '#30363d' : '#d0d7de'}" stroke-width="2"/>
+                                      <text x="60" y="65" text-anchor="middle" font-size="12" font-weight="600" fill="${theme === 'dark' ? '#e1e4e8' : '#24292e'}">
+                                          ${totalRules}
+                                      </text>
+                                  </svg>
+                              </div>
+                              <div class="summary-stats">
+                                  <div class="stat-item stat-compliant">
+                                      <span>Compliant Rules:</span>
+                                      <span>${compliantRules}</span>
+                                  </div>
+                                  <div class="stat-item stat-noncompliant">
+                                      <span>Non-Compliant Rules:</span>
+                                      <span>${nonCompliantRules}</span>
+                                  </div>
+                                  <div class="stat-item stat-insufficient">
+                                      <span>Insufficient Data:</span>
+                                      <span>${insufficientDataRules}</span>
+                                  </div>
+                              </div>
+                          </div>
+                          
+                          <div class="rules-list">
+                              ${rules.map(rule => {
+                                  const compliance = complianceMap[rule.ConfigRuleName] || {
+                                      CompliantResourceCount: 0,
+                                      NonCompliantResourceCount: 0,
+                                      TotalResourceCount: 0
+                                  };
+                                  
+                                  const isCompliant = compliance.NonCompliantResourceCount === 0 && compliance.TotalResourceCount > 0;
+                                  const isNonCompliant = compliance.NonCompliantResourceCount > 0;
+                                  
+                                  let complianceClass = 'compliance-insufficient';
+                                  let complianceText = 'Insufficient Data';
+                                  
+                                  if (isCompliant) {
+                                      complianceClass = 'compliance-compliant';
+                                      complianceText = 'Compliant';
+                                  } else if (isNonCompliant) {
+                                      complianceClass = 'compliance-noncompliant';
+                                      complianceText = 'Non-Compliant';
+                                  }
+                                  
+                                  return `
+                                      <div class="rule-item">
+                                          <div class="rule-header">
+                                              <span class="rule-name">${rule.ConfigRuleName}</span>
+                                              <span class="rule-compliance ${complianceClass}">${complianceText}</span>
+                                          </div>
+                                          <div class="rule-details">
+                                              ${compliance.TotalResourceCount > 0 ? 
+                                                  `${compliance.CompliantResourceCount}/${compliance.TotalResourceCount} resources compliant` :
+                                                  'No resources evaluated'
+                                              }
+                                          </div>
+                                      </div>
+                                  `;
+                              }).join('')}
+                          </div>
+                      </div>
+                  `;
+                  
+              } catch (error) {
+                  console.error('Error in configComplianceWidget:', error);
+                  const theme = event.widgetContext?.theme || 'light';
+                  return `
+                      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; border-radius: 6px; background: ${theme === 'dark' ? '#0d1117' : '#ffffff'}; border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};">
+                          <div style="color: ${theme === 'dark' ? '#ff8182' : '#cf222e'}; background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'}; padding: 12px; border-radius: 4px; border: 1px solid ${theme === 'dark' ? '#ff8182' : '#cf222e'}; margin-bottom: 8px;">
+                              <div style="font-weight: 600; margin-bottom: 4px;">Compliance Widget Error</div>
+                              <div style="font-size: 12px; line-height: 1.4;">${error.message || 'An unknown error occurred while fetching compliance data.'}</div>
+                          </div>
+                          <div style="font-size: 11px; color: ${theme === 'dark' ? '#8b949e' : '#656d76'};">
+                              Check CloudWatch logs for more details.
+                          </div>
+                      </div>
+                  `;
+              }
+          };
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+      Timeout: 30
+      MemorySize: 256
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'CloudWatch Custom Widget'
+
+  ConfigRemediationWidgetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${WidgetName}-config-remediation-widget'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt ConfigWidgetsRole.Arn
+      Code:
+        ZipFile: |
+          const aws = require('aws-sdk');
+          
+          exports.handler = async (event) => {
+              try {
+                  const widgetContext = event.widgetContext || {};
+                  const params = event.params || {};
+                  
+                  const config = new aws.ConfigService({ 
+                      region: params.region || widgetContext.region || process.env.AWS_REGION 
+                  });
+                  
+                  const [rulesResponse, complianceResponse] = await Promise.all([
+                      config.describeConfigRules().promise(),
+                      config.getComplianceSummaryByConfigRule().promise()
+                  ]);
+                  
+                  const complianceMap = {};
+                  complianceResponse.ComplianceSummaryByConfigRule.forEach(item => {
+                      complianceMap[item.ConfigRuleName] = {
+                          CompliantResourceCount: item.ComplianceSummary.CompliantResourceCount || 0,
+                          NonCompliantResourceCount: item.ComplianceSummary.NonCompliantResourceCount || 0,
+                          TotalResourceCount: item.ComplianceSummary.TotalResourceCount || 0
+                      };
+                  });
+                  
+                  const nonCompliantRules = rulesResponse.ConfigRules.filter(rule => {
+                      const compliance = complianceMap[rule.ConfigRuleName];
+                      return compliance && compliance.NonCompliantResourceCount > 0;
+                  });
+                  
+                  const theme = widgetContext.theme || 'light';
+                  const width = widgetContext.width || 400;
+                  const height = widgetContext.height || 300;
+                  
+                  return `
+                      <style>
+                          .remediation-widget {
+                              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                              font-size: 12px;
+                              line-height: 1.4;
+                              color: ${theme === 'dark' ? '#e1e4e8' : '#24292e'};
+                              background: ${theme === 'dark' ? '#0d1117' : '#ffffff'};
+                              border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                              border-radius: 6px;
+                              padding: 12px;
+                              overflow: hidden;
+                          }
+                          .widget-header {
+                              display: flex;
+                              justify-content: space-between;
+                              align-items: center;
+                              margin-bottom: 12px;
+                              padding-bottom: 8px;
+                              border-bottom: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                          }
+                          .widget-title {
+                              font-size: 14px;
+                              font-weight: 600;
+                              margin: 0;
+                          }
+                          .summary-stats {
+                              display: flex;
+                              gap: 8px;
+                              margin-bottom: 12px;
+                          }
+                          .stat-item {
+                              text-align: center;
+                              padding: 6px 8px;
+                              border-radius: 4px;
+                              background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'};
+                              color: ${theme === 'dark' ? '#ff8182' : '#cf222e'};
+                              font-size: 10px;
+                              font-weight: 600;
+                          }
+                          .rules-list {
+                              max-height: ${height - 120}px;
+                              overflow-y: auto;
+                          }
+                          .rule-item {
+                              padding: 8px;
+                              border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                              border-radius: 4px;
+                              margin-bottom: 6px;
+                              background: ${theme === 'dark' ? '#161b22' : '#f6f8fa'};
+                          }
+                          .rule-header {
+                              display: flex;
+                              justify-content: space-between;
+                              align-items: center;
+                              margin-bottom: 6px;
+                          }
+                          .rule-name {
+                              font-weight: 600;
+                              font-size: 11px;
+                              color: ${theme === 'dark' ? '#58a6ff' : '#0969da'};
+                          }
+                          .non-compliant-count {
+                              background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'};
+                              color: ${theme === 'dark' ? '#ff8182' : '#cf222e'};
+                              padding: 2px 6px;
+                              border-radius: 3px;
+                              font-size: 10px;
+                              font-weight: 500;
+                          }
+                          .rule-description {
+                              font-size: 10px;
+                              color: ${theme === 'dark' ? '#8b949e' : '#656d76'};
+                              margin-bottom: 8px;
+                          }
+                          .remediation-actions {
+                              display: flex;
+                              gap: 6px;
+                          }
+                          .action-button {
+                              background: ${theme === 'dark' ? '#21262d' : '#f6f8fa'};
+                              border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};
+                              border-radius: 3px;
+                              padding: 4px 8px;
+                              font-size: 10px;
+                              cursor: pointer;
+                              color: ${theme === 'dark' ? '#e1e4e8' : '#24292e'};
+                          }
+                          .primary-action {
+                              background: ${theme === 'dark' ? '#0c2d6b' : '#dafbe1'};
+                              color: ${theme === 'dark' ? '#58a6ff' : '#1a7f37'};
+                              border-color: ${theme === 'dark' ? '#58a6ff' : '#1a7f37'};
+                          }
+                          .no-data {
+                              text-align: center;
+                              padding: 20px;
+                              color: ${theme === 'dark' ? '#8b949e' : '#656d76'};
+                              font-style: italic;
+                          }
+                      </style>
+                      
+                      <div class="remediation-widget" style="width: ${width}px; height: ${height}px;">
+                          <div class="widget-header">
+                              <h3 class="widget-title">Remediation Dashboard</h3>
+                              <span style="font-size: 10px; color: ${theme === 'dark' ? '#8b949e' : '#656d76'};">
+                                  ${nonCompliantRules.length} non-compliant rules
+                              </span>
+                          </div>
+                          
+                          <div class="summary-stats">
+                              <div class="stat-item">
+                                  ${nonCompliantRules.length} Rules Need Attention
+                              </div>
+                          </div>
+                          
+                          <div class="rules-list">
+                              ${nonCompliantRules.length === 0 ? 
+                                  '<div class="no-data">All Config rules are compliant! 🎉</div>' :
+                                  nonCompliantRules.map(rule => {
+                                      const compliance = complianceMap[rule.ConfigRuleName];
+                                      const nonCompliantCount = compliance.NonCompliantResourceCount;
+                                      
+                                      return `
+                                          <div class="rule-item">
+                                              <div class="rule-header">
+                                                  <span class="rule-name">${rule.ConfigRuleName}</span>
+                                                  <span class="non-compliant-count">${nonCompliantCount} non-compliant</span>
+                                              </div>
+                                              <div class="rule-description">
+                                                  ${rule.Description ? rule.Description.substring(0, 120) + (rule.Description.length > 120 ? '...' : '') : 'No description available'}
+                                              </div>
+                                              <div class="remediation-actions">
+                                                  <cwdb-action name="remediateRule" 
+                                                              parameters='{"ruleName": "${rule.ConfigRuleName}"}'
+                                                              class="action-button primary-action">
+                                                      Remediate
+                                                  </cwdb-action>
+                                                  <cwdb-action name="getRemediationStatus" 
+                                                              parameters='{"ruleName": "${rule.ConfigRuleName}"}'
+                                                              class="action-button">
+                                                      Check Status
+                                                  </cwdb-action>
+                                              </div>
+                                          </div>
+                                      `;
+                                  }).join('')
+                              }
+                          </div>
+                      </div>
+                  `;
+                  
+              } catch (error) {
+                  console.error('Error in configRemediationWidget:', error);
+                  const theme = event.widgetContext?.theme || 'light';
+                  return `
+                      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 16px; border-radius: 6px; background: ${theme === 'dark' ? '#0d1117' : '#ffffff'}; border: 1px solid ${theme === 'dark' ? '#30363d' : '#d0d7de'};">
+                          <div style="color: ${theme === 'dark' ? '#ff8182' : '#cf222e'}; background: ${theme === 'dark' ? '#5a1e1e' : '#ffebe9'}; padding: 12px; border-radius: 4px; border: 1px solid ${theme === 'dark' ? '#ff8182' : '#cf222e'}; margin-bottom: 8px;">
+                              <div style="font-weight: 600; margin-bottom: 4px;">Remediation Widget Error</div>
+                              <div style="font-size: 12px; line-height: 1.4;">${error.message || 'An unknown error occurred while processing remediation action.'}</div>
+                          </div>
+                          <div style="font-size: 11px; color: ${theme === 'dark' ? '#8b949e' : '#656d76'};">
+                              Check CloudWatch logs for more details.
+                          </div>
+                      </div>
+                  `;
+              }
+          };
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+      Timeout: 30
+      MemorySize: 256
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: 'CloudWatch Custom Widget'
+
+Outputs:
+  ConfigRulesWidgetFunctionArn:
+    Description: 'ARN of the Config Rules Widget Lambda function'
+    Value: !GetAtt ConfigRulesWidgetFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigRulesWidgetFunctionArn'
+
+  ConfigComplianceWidgetFunctionArn:
+    Description: 'ARN of the Config Compliance Widget Lambda function'
+    Value: !GetAtt ConfigComplianceWidgetFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigComplianceWidgetFunctionArn'
+
+  ConfigRemediationWidgetFunctionArn:
+    Description: 'ARN of the Config Remediation Widget Lambda function'
+    Value: !GetAtt ConfigRemediationWidgetFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigRemediationWidgetFunctionArn'
+
+  ConfigWidgetsRoleArn:
+    Description: 'ARN of the IAM role for Config Widgets'
+    Value: !GetAtt ConfigWidgetsRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigWidgetsRoleArn'
+
+  DeploymentInstructions:
+    Description: 'Instructions for adding widgets to CloudWatch Dashboard'
+    Value: |
+      To add these widgets to your CloudWatch Dashboard:
+      
+      1. Open CloudWatch Console
+      2. Create or edit a dashboard
+      3. Add Custom Widget
+      4. Use one of the following Lambda function ARNs:
+         - Config Rules Widget: !GetAtt ConfigRulesWidgetFunction.Arn
+         - Config Compliance Widget: !GetAtt ConfigComplianceWidgetFunction.Arn
+         - Config Remediation Widget: !GetAtt ConfigRemediationWidgetFunction.Arn
+      
+      5. Configure widget parameters as needed:
+         - region: AWS region (optional)
+         - ruleNames: Array of specific rule names (optional)
+         - complianceStatus: Filter by status (optional)
+         - resourceTypes: Filter by resource types (optional)
+         - showRemediation: Enable/disable remediation buttons (optional) 
