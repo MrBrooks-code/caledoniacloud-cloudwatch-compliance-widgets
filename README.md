@@ -1,6 +1,8 @@
 # AWS Config Rules Dashboard - CloudWatch Custom Widgets
 
-A responsive HTML dashboard that displays real-time status of AWS Config rules as CloudWatch Custom Widgets, integrating seamlessly with existing CloudWatch dashboards.
+This module is a response to the inadequete dashboard available in AWS Config. This module allows for quick dashboarding of account and orginization compliance, as well as the offending resource and account if there are gaps.
+
+
 
 ## Features
 
@@ -11,6 +13,12 @@ A responsive HTML dashboard that displays real-time status of AWS Config rules a
 - **SVG Visualizations**: Compliance charts and trending data without external dependencies
 - **Search & Filter**: Filter rules by name, compliance status, or resource type
 - **Multi-Widget Support**: Different widgets for compliance summary, rule details, and remediation
+
+## Example Dashboard Layout
+
+![Example Dashboard Layout](img/example-layout.png)
+
+*Example of the AWS Config Rules Dashboard showing compliance status, rule details, and account information*
 
 ## Architecture
 
@@ -92,8 +100,6 @@ aws-config-custom-widget/
 │   │   ├── staging.tfvars
 │   │   └── prod.tfvars
 │   └── README.md                     # Terraform documentation
-├── scripts/
-│   └── deploy.sh                     # CloudFormation deployment script
 ├── tests/
 │   └── widget-tests.js               # Unit tests
 └── README.md
@@ -132,25 +138,6 @@ The Lambda functions require the following permissions:
   ]
 }
 ```
-
-## Development
-
-### Local Testing
-
-1. **Install Dependencies**:
-   ```bash
-   npm install
-   ```
-
-2. **Run Tests**:
-   ```bash
-   npm test
-   ```
-
-3. **Deploy Changes**:
-   ```bash
-   ./scripts/deploy.sh
-   ```
 
 ### Customization
 
@@ -198,12 +185,3 @@ For issues and questions:
 - Create an issue in the GitHub repository
 - Check CloudWatch logs for detailed error information
 - Review AWS Config service documentation
-
-## Roadmap
-
-- [ ] Multi-account support
-- [ ] Advanced filtering and search
-- [ ] Historical compliance trending
-- [ ] Automated remediation workflows
-- [ ] Custom rule templates
-- [ ] Integration with AWS Security Hub 
